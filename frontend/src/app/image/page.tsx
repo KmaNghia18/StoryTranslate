@@ -41,6 +41,8 @@ export default function ImagePage() {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: string } | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [progressStep, setProgressStep] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = (message: string, type: string = "success") => {
@@ -57,6 +59,8 @@ export default function ImagePage() {
     setSourceFile(file);
     setResultPreview("");
     setDetections([]);
+    setProgress(0);
+    setProgressStep("");
 
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -89,8 +93,11 @@ export default function ImagePage() {
 
     setLoading(true);
     setDetections([]);
+    setProgress(0);
+    setProgressStep("Đang tải ảnh lên...");
 
     try {
+      // Step 1: Upload and start async processing
       const formData = new FormData();
       formData.append("file", sourceFile);
       formData.append("source_lang", sourceLang);
@@ -99,29 +106,64 @@ export default function ImagePage() {
       formData.append("use_gemini", String(useGemini));
       formData.append("gemini_api_key", geminiKey);
 
-      const res = await fetch(`${API_BASE}/api/translate/image`, {
+      const startRes = await fetch(`${API_BASE}/api/translate/image/async`, {
         method: "POST",
         body: formData,
       });
 
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.detail || "Image translation failed");
+      if (!startRes.ok) {
+        const error = await startRes.json();
+        throw new Error(error.detail || "Failed to start translation");
       }
 
-      // Get detection info from headers
-      const detectionsHeader = res.headers.get("X-Detections");
-      if (detectionsHeader) {
-        try {
-          const parsed = JSON.parse(detectionsHeader.replace(/'/g, '"'));
-          setDetections(parsed);
-        } catch {
-          // Ignore parse errors
-        }
+      const { task_id } = await startRes.json();
+
+      // Step 2: Listen for progress via SSE
+      await new Promise<void>((resolve, reject) => {
+        const eventSource = new EventSource(
+          `${API_BASE}/api/translate/image/progress/${task_id}`
+        );
+
+        eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            setProgress(data.progress);
+            setProgressStep(data.step);
+
+            if (data.status === "failed") {
+              eventSource.close();
+              reject(new Error(data.error || "Translation failed"));
+            }
+
+            if (data.status === "completed") {
+              if (data.detections) {
+                setDetections(data.detections);
+              }
+              eventSource.close();
+              resolve();
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        };
+
+        eventSource.onerror = () => {
+          eventSource.close();
+          // Don't reject on error - might just be connection closed after completion
+          resolve();
+        };
+      });
+
+      // Step 3: Fetch the result image
+      const resultRes = await fetch(
+        `${API_BASE}/api/translate/image/result/${task_id}`
+      );
+
+      if (!resultRes.ok) {
+        throw new Error("Failed to fetch result image");
       }
 
-      // Get image result
-      const blob = await res.blob();
+      const blob = await resultRes.blob();
       const url = URL.createObjectURL(blob);
       setResultPreview(url);
       showToast("Dịch ảnh thành công! ✓");
@@ -147,6 +189,8 @@ export default function ImagePage() {
     setSourcePreview("");
     setResultPreview("");
     setDetections([]);
+    setProgress(0);
+    setProgressStep("");
   };
 
   return (
@@ -282,8 +326,18 @@ export default function ImagePage() {
               <div className="preview-body">
                 {loading ? (
                   <div className="spinner-overlay">
-                    <div className="spinner"></div>
-                    <div className="spinner-text">Đang xử lý ảnh...</div>
+                    <div className="progress-container">
+                      <div className="progress-bar-wrapper">
+                        <div
+                          className="progress-bar-fill"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                      <div className="progress-info">
+                        <span className="progress-percent">{progress}%</span>
+                        <span className="progress-step">{progressStep}</span>
+                      </div>
+                    </div>
                   </div>
                 ) : resultPreview ? (
                   <img src={resultPreview} alt="Translated" />
@@ -309,7 +363,7 @@ export default function ImagePage() {
                     className="spinner"
                     style={{ width: 18, height: 18, borderWidth: 2 }}
                   ></span>
-                  Đang xử lý...
+                  Đang xử lý... {progress}%
                 </>
               ) : (
                 "✦ Dịch ảnh"

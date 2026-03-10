@@ -1,14 +1,22 @@
 """
 API router for translation endpoints.
+Includes SSE (Server-Sent Events) for image translation progress.
 """
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 import traceback
+import threading
+import asyncio
+import json
 
 from app.services.text_service import translate_text, get_supported_languages
 from app.services.image_service import translate_image
+from app.services.task_store import (
+    create_task, get_task, update_task, complete_task, fail_task,
+    wait_for_progress, TaskStatus,
+)
 
 router = APIRouter(prefix="/api/translate", tags=["translate"])
 
@@ -113,6 +121,134 @@ async def translate_image_endpoint(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/image/async")
+async def translate_image_async_endpoint(
+    file: UploadFile = File(...),
+    source_lang: str = Form(default="auto"),
+    target_lang: str = Form(default="vi"),
+    use_manga_ocr: bool = Form(default=False),
+    use_gemini: bool = Form(default=False),
+    gemini_api_key: str = Form(default=""),
+):
+    """Start async image translation. Returns task_id for progress tracking."""
+    try:
+        if not file.content_type or not file.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="File must be an image")
+
+        image_bytes = await file.read()
+        if len(image_bytes) == 0:
+            raise HTTPException(status_code=400, detail="Empty file uploaded")
+
+        # Create task
+        task_id = create_task()
+
+        # Start processing in background thread
+        def process():
+            try:
+                def on_progress(progress: int, step: str):
+                    update_task(task_id, progress, step)
+
+                result_bytes, detections = translate_image(
+                    image_bytes=image_bytes,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    use_manga_ocr=use_manga_ocr,
+                    use_gemini=use_gemini,
+                    gemini_api_key=gemini_api_key if gemini_api_key else None,
+                    on_progress=on_progress,
+                )
+
+                complete_task(task_id, result_bytes, detections)
+
+            except Exception as e:
+                traceback.print_exc()
+                fail_task(task_id, str(e))
+
+        thread = threading.Thread(target=process, daemon=True)
+        thread.start()
+
+        return {"task_id": task_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/image/progress/{task_id}")
+async def get_image_progress(task_id: str):
+    """SSE endpoint for real-time progress of image translation."""
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    async def event_stream():
+        last_progress = -1
+        while True:
+            task = get_task(task_id)
+            if not task:
+                break
+
+            # Send update if progress changed
+            if task.progress != last_progress:
+                last_progress = task.progress
+                data = {
+                    "progress": task.progress,
+                    "step": task.step,
+                    "status": task.status.value,
+                }
+                if task.status == TaskStatus.FAILED:
+                    data["error"] = task.error
+                if task.status == TaskStatus.COMPLETED:
+                    data["detections"] = [
+                        {
+                            "original": d["text"],
+                            "translated": d.get("translated_text", ""),
+                            "confidence": d["confidence"],
+                        }
+                        for d in task.detections
+                    ]
+
+                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+            # Stop if done
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                break
+
+            # Wait for next update
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/image/result/{task_id}")
+async def get_image_result(task_id: str):
+    """Get the result image for a completed task."""
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.status == TaskStatus.FAILED:
+        raise HTTPException(status_code=500, detail=task.error or "Task failed")
+
+    if task.status != TaskStatus.COMPLETED:
+        raise HTTPException(status_code=202, detail="Task still processing")
+
+    return Response(
+        content=task.result,
+        media_type="image/png",
+    )
 
 
 @router.get("/languages")

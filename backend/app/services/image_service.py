@@ -23,24 +23,39 @@ def translate_image(
     use_manga_ocr: bool = False,
     use_gemini: bool = False,
     gemini_api_key: str | None = None,
+    on_progress: callable = None,
 ) -> tuple[bytes, list[dict]]:
     """
     Full pipeline: OCR → Translate → Inpaint → Render.
     
+    Args:
+        on_progress: callback(progress_int, step_str) for progress updates
+    
     Returns:
         tuple of (translated_image_bytes, detection_details)
     """
+    def report(progress: int, step: str):
+        if on_progress:
+            on_progress(progress, step)
+
     # Step 1: OCR
+    report(5, "Đang nhận diện chữ trên ảnh (OCR)...")
     if use_manga_ocr:
         detections = detect_text_manga(image_bytes)
     else:
         detections = detect_text(image_bytes, source_lang)
 
+    report(30, f"Nhận diện được {len(detections)} đoạn text")
+
     if not detections:
+        report(100, "Không tìm thấy text trên ảnh")
         return image_bytes, []
 
     # Step 2: Translate each detected text
-    for det in detections:
+    total = len(detections)
+    for i, det in enumerate(detections):
+        pct = 30 + int((i / total) * 40)  # 30% -> 70%
+        report(pct, f"Đang dịch đoạn {i+1}/{total}...")
         translated = translate_text(
             det["text"],
             source_lang=source_lang,
@@ -51,8 +66,11 @@ def translate_image(
         det["translated_text"] = translated
 
     # Step 3 & 4: Inpaint + Render
+    report(75, "Đang xóa chữ cũ (Inpainting)...")
     result_bytes = _inpaint_and_render(image_bytes, detections)
+    report(95, "Đang render chữ mới lên ảnh...")
 
+    report(100, "Hoàn thành!")
     return result_bytes, detections
 
 
