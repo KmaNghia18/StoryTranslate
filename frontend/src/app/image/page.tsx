@@ -118,41 +118,34 @@ export default function ImagePage() {
 
       const { task_id } = await startRes.json();
 
-      // Step 2: Listen for progress via SSE
-      await new Promise<void>((resolve, reject) => {
-        const eventSource = new EventSource(
-          `${API_BASE}/api/translate/image/progress/${task_id}`
+      // Step 2: Poll for progress
+      let done = false;
+      while (!done) {
+        await new Promise((r) => setTimeout(r, 500)); // Poll every 500ms
+
+        const progressRes = await fetch(
+          `${API_BASE}/api/translate/image/status/${task_id}`
         );
 
-        eventSource.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            setProgress(data.progress);
-            setProgressStep(data.step);
+        if (!progressRes.ok) {
+          throw new Error("Failed to check progress");
+        }
 
-            if (data.status === "failed") {
-              eventSource.close();
-              reject(new Error(data.error || "Translation failed"));
-            }
+        const data = await progressRes.json();
+        setProgress(data.progress);
+        setProgressStep(data.step);
 
-            if (data.status === "completed") {
-              if (data.detections) {
-                setDetections(data.detections);
-              }
-              eventSource.close();
-              resolve();
-            }
-          } catch {
-            // Ignore parse errors
+        if (data.status === "failed") {
+          throw new Error(data.error || "Translation failed");
+        }
+
+        if (data.status === "completed") {
+          if (data.detections) {
+            setDetections(data.detections);
           }
-        };
-
-        eventSource.onerror = () => {
-          eventSource.close();
-          // Don't reject on error - might just be connection closed after completion
-          resolve();
-        };
-      });
+          done = true;
+        }
+      }
 
       // Step 3: Fetch the result image
       const resultRes = await fetch(

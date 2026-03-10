@@ -218,6 +218,35 @@ async def get_image_progress(task_id: str):
     )
 
 
+@router.get("/image/status/{task_id}")
+async def get_image_status(task_id: str):
+    """Simple JSON polling endpoint for task progress."""
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    data = {
+        "progress": task.progress,
+        "step": task.step,
+        "status": task.status.value,
+    }
+
+    if task.status == TaskStatus.FAILED:
+        data["error"] = task.error
+
+    if task.status == TaskStatus.COMPLETED:
+        data["detections"] = [
+            {
+                "original": d["text"],
+                "translated": d.get("translated_text", ""),
+                "confidence": d["confidence"],
+            }
+            for d in task.detections
+        ]
+
+    return data
+
+
 @router.get("/image/result/{task_id}")
 async def get_image_result(task_id: str):
     """Get the result image for a completed task."""
