@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import os
 
-from app.services.ocr_service import detect_text, detect_text_manga
+from app.services.ocr_service import detect_text, detect_text_manga, is_model_loading
 from app.services.text_service import translate_text
 
 
@@ -39,10 +39,12 @@ def translate_image(
             on_progress(progress, step)
 
     # Step 1: OCR
-    report(5, "Đang nhận diện chữ trên ảnh (OCR)...")
+    report(3, "Đang chuẩn bị OCR engine...")
     if use_manga_ocr:
+        report(5, "Đang nhận diện chữ bằng Manga OCR...")
         detections = detect_text_manga(image_bytes)
     else:
+        report(5, "Đang nhận diện chữ trên ảnh (OCR)... Lần đầu sẽ tải model ~100MB")
         detections = detect_text(image_bytes, source_lang)
 
     report(30, f"Nhận diện được {len(detections)} đoạn text")

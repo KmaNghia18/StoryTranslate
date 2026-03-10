@@ -8,20 +8,44 @@ import numpy as np
 from PIL import Image
 import io
 import threading
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Singleton OCR readers
 _readers: dict[str, easyocr.Reader] = {}
 _lock = threading.Lock()
+_model_loading = False
 
 
 def get_reader(languages: list[str]) -> easyocr.Reader:
     """Get or create an EasyOCR reader (singleton per language combo)."""
+    global _model_loading
     key = ",".join(sorted(languages))
     if key not in _readers:
         with _lock:
             if key not in _readers:
+                _model_loading = True
+                logger.info(f"Loading EasyOCR model for languages: {languages} (first time may download ~100MB)")
                 _readers[key] = easyocr.Reader(languages, gpu=False)
+                _model_loading = False
+                logger.info(f"EasyOCR model loaded for: {languages}")
     return _readers[key]
+
+
+def is_model_loading() -> bool:
+    """Check if a model is currently being downloaded/loaded."""
+    return _model_loading
+
+
+def preload_reader(languages: list[str] = ["en"]):
+    """Pre-load OCR model in background thread."""
+    def _load():
+        try:
+            get_reader(languages)
+        except Exception as e:
+            logger.error(f"Failed to preload OCR model: {e}")
+    threading.Thread(target=_load, daemon=True).start()
 
 
 def detect_text(
