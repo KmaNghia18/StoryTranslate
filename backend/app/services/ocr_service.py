@@ -26,8 +26,10 @@ def get_reader(languages: list[str]) -> easyocr.Reader:
         with _lock:
             if key not in _readers:
                 _model_loading = True
-                logger.info(f"Loading EasyOCR model for languages: {languages} (first time may download ~100MB)")
-                _readers[key] = easyocr.Reader(languages, gpu=False)
+                import torch
+                use_gpu = torch.cuda.is_available()
+                logger.info(f"Loading EasyOCR model for languages: {languages} (GPU: {use_gpu})")
+                _readers[key] = easyocr.Reader(languages, gpu=use_gpu)
                 _model_loading = False
                 logger.info(f"EasyOCR model loaded for: {languages}")
     return _readers[key]
