@@ -101,33 +101,46 @@ def detect_text(
     return detections
 
 
+_manga_ocr_instance = None
+_manga_ocr_lock = threading.Lock()
+
+
+def _get_manga_ocr():
+    """Get or create Manga OCR instance (singleton)."""
+    global _manga_ocr_instance
+    if _manga_ocr_instance is None:
+        with _manga_ocr_lock:
+            if _manga_ocr_instance is None:
+                from manga_ocr import MangaOcr
+                logger.info("Loading Manga OCR model (first time downloads ~400MB)...")
+                _manga_ocr_instance = MangaOcr()
+                logger.info("Manga OCR model loaded")
+    return _manga_ocr_instance
+
+
 def detect_text_manga(image_bytes: bytes, source_lang: str = "en") -> list[dict]:
     """
     Detect text using Manga OCR (specialized for manga/manhwa).
+    Uses EasyOCR for bounding box detection, then Manga OCR for text recognition.
     Falls back to EasyOCR if manga-ocr is not installed.
     """
     try:
-        from manga_ocr import MangaOcr
+        mocr = _get_manga_ocr()
 
         # Use EasyOCR for detection (bounding boxes)
-        # Then Manga OCR for better text recognition
         image = Image.open(io.BytesIO(image_bytes))
         image_np = np.array(image)
 
-        reader = get_reader(["ja", "en"])
+        reader = get_reader(["en"])
         results = reader.readtext(image_np)
 
-        mocr = MangaOcr()
         detections = []
-
-        for bbox, _, confidence in results:
+        for bbox, easyocr_text, confidence in results:
             if confidence > 0.2:
-                # Crop region and use Manga OCR for text
                 pts = np.array(bbox, dtype=np.int32)
                 x_min, y_min = pts.min(axis=0)
                 x_max, y_max = pts.max(axis=0)
 
-                # Add padding
                 pad = 5
                 x_min = max(0, x_min - pad)
                 y_min = max(0, y_min - pad)
@@ -137,15 +150,19 @@ def detect_text_manga(image_bytes: bytes, source_lang: str = "en") -> list[dict]
                 crop = image.crop((x_min, y_min, x_max, y_max))
                 text = mocr(crop)
 
+                # Use manga-ocr text if non-empty, otherwise fallback to EasyOCR text
+                final_text = text.strip() if text.strip() else easyocr_text
+
                 detections.append({
                     "bbox": bbox,
-                    "text": text,
+                    "text": final_text,
                     "confidence": float(confidence),
                 })
 
+        logger.info(f"Manga OCR detected {len(detections)} text regions")
         return detections
 
     except ImportError:
-        # Fallback to EasyOCR with the source language (not just Japanese)
         logger.warning("manga-ocr not installed, falling back to EasyOCR")
         return detect_text(image_bytes, source_lang)
+
