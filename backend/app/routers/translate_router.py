@@ -15,10 +15,15 @@ from app.services.text_service import translate_text, get_supported_languages
 from app.services.image_service import translate_image
 from app.services.task_store import (
     create_task, get_task, update_task, complete_task, fail_task,
-    wait_for_progress, TaskStatus,
+    TaskStatus,
 )
 
 router = APIRouter(prefix="/api/translate", tags=["translate"])
+
+
+def _parse_bool(value: str) -> bool:
+    """Parse a string to boolean (form fields send strings)."""
+    return value.lower() in ("true", "1", "yes", "on")
 
 
 class TextTranslateRequest(BaseModel):
@@ -33,17 +38,6 @@ class TextTranslateResponse(BaseModel):
     translated_text: str
     source_lang: str
     target_lang: str
-
-
-class DetectionInfo(BaseModel):
-    text: str
-    translated_text: str
-    confidence: float
-
-
-class ImageTranslateResponse(BaseModel):
-    detections: list[DetectionInfo]
-    message: str
 
 
 @router.post("/text", response_model=TextTranslateResponse)
@@ -72,38 +66,34 @@ async def translate_image_endpoint(
     file: UploadFile = File(...),
     source_lang: str = Form(default="auto"),
     target_lang: str = Form(default="vi"),
-    use_manga_ocr: bool = Form(default=False),
-    use_gemini: bool = Form(default=False),
+    use_manga_ocr: str = Form(default="false"),
+    use_gemini: str = Form(default="false"),
     gemini_api_key: str = Form(default=""),
 ):
     """Translate text in an image. Returns the translated image."""
     try:
-        # Validate file type
         if not file.content_type or not file.content_type.startswith("image/"):
             raise HTTPException(status_code=400, detail="File must be an image")
 
         image_bytes = await file.read()
-
         if len(image_bytes) == 0:
             raise HTTPException(status_code=400, detail="Empty file uploaded")
 
-        # Process image
         result_bytes, detections = translate_image(
             image_bytes=image_bytes,
             source_lang=source_lang,
             target_lang=target_lang,
-            use_manga_ocr=use_manga_ocr,
-            use_gemini=use_gemini,
+            use_manga_ocr=_parse_bool(use_manga_ocr),
+            use_gemini=_parse_bool(use_gemini),
             gemini_api_key=gemini_api_key if gemini_api_key else None,
         )
 
-        # Return translated image
         return Response(
             content=result_bytes,
             media_type="image/png",
             headers={
                 "X-Detections-Count": str(len(detections)),
-                "X-Detections": str(
+                "X-Detections": json.dumps(
                     [
                         {
                             "original": d["text"],
@@ -111,7 +101,8 @@ async def translate_image_endpoint(
                             "confidence": d["confidence"],
                         }
                         for d in detections
-                    ]
+                    ],
+                    ensure_ascii=False,
                 ),
             },
         )
@@ -128,8 +119,8 @@ async def translate_image_async_endpoint(
     file: UploadFile = File(...),
     source_lang: str = Form(default="auto"),
     target_lang: str = Form(default="vi"),
-    use_manga_ocr: bool = Form(default=False),
-    use_gemini: bool = Form(default=False),
+    use_manga_ocr: str = Form(default="false"),
+    use_gemini: str = Form(default="false"),
     gemini_api_key: str = Form(default=""),
 ):
     """Start async image translation. Returns task_id for progress tracking."""
@@ -141,10 +132,11 @@ async def translate_image_async_endpoint(
         if len(image_bytes) == 0:
             raise HTTPException(status_code=400, detail="Empty file uploaded")
 
-        # Create task
         task_id = create_task()
+        _use_manga = _parse_bool(use_manga_ocr)
+        _use_gem = _parse_bool(use_gemini)
+        _gem_key = gemini_api_key if gemini_api_key else None
 
-        # Start processing in background thread
         def process():
             try:
                 def on_progress(progress: int, step: str):
@@ -154,14 +146,12 @@ async def translate_image_async_endpoint(
                     image_bytes=image_bytes,
                     source_lang=source_lang,
                     target_lang=target_lang,
-                    use_manga_ocr=use_manga_ocr,
-                    use_gemini=use_gemini,
-                    gemini_api_key=gemini_api_key if gemini_api_key else None,
+                    use_manga_ocr=_use_manga,
+                    use_gemini=_use_gem,
+                    gemini_api_key=_gem_key,
                     on_progress=on_progress,
                 )
-
                 complete_task(task_id, result_bytes, detections)
-
             except Exception as e:
                 traceback.print_exc()
                 fail_task(task_id, str(e))
@@ -192,7 +182,6 @@ async def get_image_progress(task_id: str):
             if not task:
                 break
 
-            # Send update if progress changed
             if task.progress != last_progress:
                 last_progress = task.progress
                 data = {
@@ -211,14 +200,11 @@ async def get_image_progress(task_id: str):
                         }
                         for d in task.detections
                     ]
-
                 yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-            # Stop if done
             if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
                 break
 
-            # Wait for next update
             await asyncio.sleep(0.3)
 
     return StreamingResponse(
