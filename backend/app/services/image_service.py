@@ -151,16 +151,17 @@ def _inpaint_and_render(image_bytes: bytes, detections: list[dict]) -> bytes:
 
 def _get_fitted_font(text: str, box_w: int, box_h: int) -> ImageFont.FreeTypeFont:
     """Get a font that fits the text within the bounding box."""
-    # Try to find a good font
+    # Fonts that support Vietnamese diacritics (ordered by preference)
     font_paths = [
-        # Windows fonts
         "C:/Windows/Fonts/arial.ttf",
-        "C:/Windows/Fonts/msyh.ttc",  # Microsoft YaHei (CJK support)
-        "C:/Windows/Fonts/malgun.ttf",  # Malgun Gothic (Korean)
-        "C:/Windows/Fonts/meiryo.ttc",  # Meiryo (Japanese)
+        "C:/Windows/Fonts/tahoma.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/calibri.ttf",
+        "C:/Windows/Fonts/verdana.ttf",
+        "C:/Windows/Fonts/times.ttf",
         # Linux fonts
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     ]
 
     font_path = None
@@ -169,10 +170,9 @@ def _get_fitted_font(text: str, box_w: int, box_h: int) -> ImageFont.FreeTypeFon
             font_path = fp
             break
 
-    # Binary search for best font size
+    # Binary search for best font size (from large to small)
     min_size = 8
     max_size = max(box_h, 60)
-    best_size = min_size
 
     for size in range(max_size, min_size - 1, -1):
         try:
@@ -181,7 +181,7 @@ def _get_fitted_font(text: str, box_w: int, box_h: int) -> ImageFont.FreeTypeFon
             else:
                 font = ImageFont.load_default(size)
         except Exception:
-            font = ImageFont.load_default()
+            continue
 
         dummy = Image.new("RGB", (1, 1))
         dummy_draw = ImageDraw.Draw(dummy)
@@ -190,14 +190,13 @@ def _get_fitted_font(text: str, box_w: int, box_h: int) -> ImageFont.FreeTypeFon
         text_h = text_bbox[3] - text_bbox[1]
 
         if text_w <= box_w and text_h <= box_h:
-            best_size = size
-            break
+            return font
 
+    # Fallback: smallest size with the proper font
     try:
         if font_path:
-            return ImageFont.truetype(font_path, best_size)
-        else:
-            return ImageFont.load_default(best_size)
+            return ImageFont.truetype(font_path, min_size)
+        return ImageFont.load_default(min_size)
     except Exception:
         return ImageFont.load_default()
 
