@@ -42,7 +42,7 @@ def translate_image(
     report(3, "Đang chuẩn bị OCR engine...")
     if use_manga_ocr:
         report(5, "Đang nhận diện chữ bằng Manga OCR...")
-        detections = detect_text_manga(image_bytes)
+        detections = detect_text_manga(image_bytes, source_lang)
     else:
         report(5, "Đang nhận diện chữ trên ảnh (OCR)... Lần đầu sẽ tải model ~100MB")
         detections = detect_text(image_bytes, source_lang)

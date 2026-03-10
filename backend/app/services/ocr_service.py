@@ -101,7 +101,7 @@ def detect_text(
     return detections
 
 
-def detect_text_manga(image_bytes: bytes) -> list[dict]:
+def detect_text_manga(image_bytes: bytes, source_lang: str = "en") -> list[dict]:
     """
     Detect text using Manga OCR (specialized for manga/manhwa).
     Falls back to EasyOCR if manga-ocr is not installed.
@@ -146,6 +146,6 @@ def detect_text_manga(image_bytes: bytes) -> list[dict]:
         return detections
 
     except ImportError:
-        # Fallback to EasyOCR
-        print("manga-ocr not installed, falling back to EasyOCR")
-        return detect_text(image_bytes, "ja")
+        # Fallback to EasyOCR with the source language (not just Japanese)
+        logger.warning("manga-ocr not installed, falling back to EasyOCR")
+        return detect_text(image_bytes, source_lang)
